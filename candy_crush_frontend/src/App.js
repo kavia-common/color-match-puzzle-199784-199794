@@ -40,6 +40,14 @@ function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [clearingSet, setClearingSet] = useState(new Set());
 
+  // Visual swap/revert states so the user can see tentative swaps in preview.
+  // swapPhase: null | "swapping" | "reverting"
+  const [swapPhase, setSwapPhase] = useState(null);
+  const [swapPair, setSwapPair] = useState(null); // { from:number, to:number } | null
+
+  // Used for invalid action feedback (non-adjacent second click, no-match swaps).
+  const [invalidPulse, setInvalidPulse] = useState(null); // { index:number, nonce:number } | null
+
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(0.8);
@@ -60,12 +68,33 @@ function App() {
     document.documentElement.setAttribute("data-reduced-motion", reducedMotion ? "true" : "false");
   }, [reducedMotion]);
 
+  const debugEnabled = useMemo(() => {
+    // Enable logs by setting REACT_APP_LOG_LEVEL=debug
+    // (Orchestrator/user can set this in the environment for preview.)
+    return String(process.env.REACT_APP_LOG_LEVEL || "").toLowerCase() === "debug";
+  }, []);
+
+  const debugLog = (...args) => {
+    if (!debugEnabled) return;
+    // eslint-disable-next-line no-console
+    console.log("[CitrusCrush]", ...args);
+  };
+
+  const triggerInvalidPulse = (index) => {
+    setInvalidPulse({ index, nonce: Date.now() + Math.random() });
+    // auto-clear; CSS animation also ends, but this prevents stale class sticking
+    setTimeout(() => setInvalidPulse(null), reducedMotion ? 80 : 260);
+  };
+
   const canMove = movesLeft > 0;
 
   const startNewGame = () => {
     setIsBusy(true);
     setSelectedIndex(null);
     setClearingSet(new Set());
+    setSwapPhase(null);
+    setSwapPair(null);
+    setInvalidPulse(null);
     setScore(0);
     setLevel(1);
     setMovesLeft(INITIAL_MOVES);
@@ -78,6 +107,9 @@ function App() {
     setIsBusy(true);
     setSelectedIndex(null);
     setClearingSet(new Set());
+    setSwapPhase(null);
+    setSwapPair(null);
+    setInvalidPulse(null);
 
     soundsRef.current?.levelUp();
 
@@ -142,6 +174,7 @@ function App() {
     if (selectedIndex === null) {
       setSelectedIndex(idx);
       soundsRef.current?.swap();
+      debugLog("select:first", { idx });
       return;
     }
 
@@ -153,14 +186,18 @@ function App() {
     // reselect same cell
     if (fromIdx === toIdx) {
       setSelectedIndex(null);
+      debugLog("select:clear", { idx });
       return;
     }
 
     // second click: attempt swap if adjacent
     if (!areAdjacent(fromIdx, toIdx)) {
-      // switch selection to new cell (no swap)
+      // switch selection to new cell (no swap) + subtle invalid feedback
       setSelectedIndex(toIdx);
       soundsRef.current?.invalid();
+      triggerInvalidPulse(fromIdx);
+      triggerInvalidPulse(toIdx);
+      debugLog("select:nonAdjacent", { fromIdx, toIdx });
       return;
     }
 
@@ -170,37 +207,57 @@ function App() {
     setIsBusy(true);
     setSelectedIndex(null);
 
+    // Show explicit swap animation state (visual only).
+    setSwapPair({ from: fromIdx, to: toIdx });
+    setSwapPhase("swapping");
+
     soundsRef.current?.swap();
+    debugLog("swap:tentative", { fromIdx, toIdx, opId });
 
     // 1) Tentative swap (always for adjacent candies)
     let swapped = swapCells(boardSnapshot, fromIdx, toIdx);
     setBoard(swapped);
 
-    await sleep(reducedMotion ? 60 : 140);
+    await sleep(reducedMotion ? 80 : 220);
     if (swapOpRef.current !== opId) return;
 
-    // 2) Check if that swap created any match
+    // swap phase ends after animation completes
+    setSwapPhase(null);
+
+    // 2) Check if that swap created any match (must be done AFTER tentative swap)
     const { matchedIndices } = findMatches(swapped);
+    debugLog("swap:matchCheck", { opId, matchedCount: matchedIndices.size });
 
     // 3) No match => revert swap, do NOT spend a move
     if (matchedIndices.size === 0) {
       soundsRef.current?.invalid();
+      triggerInvalidPulse(fromIdx);
+      triggerInvalidPulse(toIdx);
+
+      setSwapPhase("reverting");
+      debugLog("swap:revert", { fromIdx, toIdx, opId });
+
       const reverted = swapCells(swapped, fromIdx, toIdx);
       setBoard(reverted);
 
-      await sleep(reducedMotion ? 60 : 140);
+      await sleep(reducedMotion ? 90 : 200);
       if (swapOpRef.current !== opId) return;
 
+      setSwapPhase(null);
+      setSwapPair(null);
       setIsBusy(false);
       return;
     }
 
     // 4) Match exists => spend a move and resolve clears/cascades
     setMovesLeft((m) => Math.max(0, m - 1));
+    debugLog("swap:validMoveResolve", { opId });
 
     swapped = await resolveBoard(swapped);
     if (swapOpRef.current !== opId) return;
 
+    setSwapPair(null);
+    setSwapPhase(null);
     setIsBusy(false);
 
     // If out of moves after a valid move, end state is simply "no moves"; user can start new game.
@@ -230,6 +287,9 @@ function App() {
             clearingSet={clearingSet}
             onCellActivate={handleCellActivate}
             disabled={isBusy || settingsOpen || !canMove}
+            swapPhase={swapPhase}
+            swapPair={swapPair}
+            invalidPulse={invalidPulse}
           />
 
           <Controls

@@ -137,7 +137,7 @@
   cursor: pointer;
   position: relative;
   outline: none;
-  transition: transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+  transition: transform 160ms ease, box-shadow 120ms ease, background-color 120ms ease;
 }
 
 .cc-cell:disabled {
@@ -172,6 +172,61 @@
 
 .cc-cell.is-clearing .cc-candy {
   animation: ccPop 160ms ease-in forwards;
+}
+
+/* Explicit swap/revert animation states (visual-only, driven by App swapPhase/swapPair) */
+.cc-cell.is-swapping .cc-candy,
+.cc-cell.is-reverting .cc-candy {
+  transition: transform 220ms ease, filter 120ms ease;
+  will-change: transform;
+}
+
+.cc-cell.is-reverting .cc-candy {
+  transition: transform 200ms ease;
+}
+
+.cc-cell.is-swapping.swap-left .cc-candy,
+.cc-cell.is-reverting.swap-left .cc-candy {
+  transform: translateX(-120%) scale(0.98);
+}
+
+.cc-cell.is-swapping.swap-right .cc-candy,
+.cc-cell.is-reverting.swap-right .cc-candy {
+  transform: translateX(120%) scale(0.98);
+}
+
+.cc-cell.is-swapping.swap-up .cc-candy,
+.cc-cell.is-reverting.swap-up .cc-candy {
+  transform: translateY(-120%) scale(0.98);
+}
+
+.cc-cell.is-swapping.swap-down .cc-candy,
+.cc-cell.is-reverting.swap-down .cc-candy {
+  transform: translateY(120%) scale(0.98);
+}
+
+/* Invalid move feedback */
+.cc-cell.is-invalid {
+  animation: ccInvalidShake 240ms ease-in-out;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+@keyframes ccInvalidShake {
+  0% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-2px);
+  }
+  50% {
+    transform: translateX(3px);
+  }
+  75% {
+    transform: translateX(-2px);
+  }
+  100% {
+    transform: translateX(0);
+  }
 }
 
 @keyframes ccPop {
