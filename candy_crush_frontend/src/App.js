@@ -1,47 +1,236 @@
-import React, { useState, useEffect } from 'react';
-import logo from './logo.svg';
-import './App.css';
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import "./App.css";
+import Controls from "./components/Controls";
+import GameBoard from "./components/GameBoard";
+import HUD from "./components/HUD";
+import SettingsModal from "./components/SettingsModal";
+import {
+  applyGravityAndRefill,
+  areAdjacent,
+  clearMatches,
+  createInitialBoard,
+  findMatches,
+  scoreForMatchGroups,
+  swapCells,
+  wouldSwapCreateMatch
+} from "./utils/gameUtils";
+import { createSoundPlayer } from "./utils/sound";
+
+const INITIAL_MOVES = 20;
+
+function targetScoreForLevel(level) {
+  return 400 + (level - 1) * 250;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 // PUBLIC_INTERFACE
 function App() {
-  const [theme, setTheme] = useState('light');
+  /** Main app entry: manages all game state and composes UI components. */
+  const [board, setBoard] = useState(() => createInitialBoard());
+  const [selectedIndex, setSelectedIndex] = useState(null);
 
-  // Effect to apply theme to document element
+  const [score, setScore] = useState(0);
+  const [level, setLevel] = useState(1);
+  const targetScore = useMemo(() => targetScoreForLevel(level), [level]);
+
+  const [movesLeft, setMovesLeft] = useState(INITIAL_MOVES);
+
+  const [isBusy, setIsBusy] = useState(false);
+  const [clearingSet, setClearingSet] = useState(new Set());
+
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(0.8);
+  const [reducedMotion, setReducedMotion] = useState(false);
+
+  const soundsRef = useRef(null);
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-  }, [theme]);
+    soundsRef.current = createSoundPlayer({
+      getMuted: () => muted,
+      getVolume: () => volume
+    });
+  }, [muted, volume]);
 
-  // PUBLIC_INTERFACE
-  const toggleTheme = () => {
-    setTheme(prevTheme => prevTheme === 'light' ? 'dark' : 'light');
+  useEffect(() => {
+    document.documentElement.setAttribute("data-reduced-motion", reducedMotion ? "true" : "false");
+  }, [reducedMotion]);
+
+  const canMove = movesLeft > 0;
+
+  const startNewGame = () => {
+    setIsBusy(true);
+    setSelectedIndex(null);
+    setClearingSet(new Set());
+    setScore(0);
+    setLevel(1);
+    setMovesLeft(INITIAL_MOVES);
+    setBoard(createInitialBoard());
+    // tiny delay so button feels responsive even if we do work
+    setTimeout(() => setIsBusy(false), 50);
   };
+
+  const startNextLevel = async () => {
+    setIsBusy(true);
+    setSelectedIndex(null);
+    setClearingSet(new Set());
+
+    soundsRef.current?.levelUp();
+
+    // small celebration pause
+    await sleep(reducedMotion ? 100 : 450);
+
+    setLevel((l) => l + 1);
+    setMovesLeft(INITIAL_MOVES);
+    setBoard(createInitialBoard());
+    setScore(0);
+
+    setIsBusy(false);
+  };
+
+  const resolveBoard = async (workingBoard) => {
+    // Continue clearing/cascading until stable.
+    let next = workingBoard;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { matchedIndices, matchGroups } = findMatches(next);
+      if (matchedIndices.size === 0) {
+        setClearingSet(new Set());
+        break;
+      }
+
+      // show clearing state briefly
+      setClearingSet(new Set(matchedIndices));
+      soundsRef.current?.match();
+
+      await sleep(reducedMotion ? 70 : 180);
+
+      const cleared = clearMatches(next, matchedIndices);
+      setBoard(cleared);
+
+      const gained = scoreForMatchGroups(matchGroups);
+      setScore((s) => s + gained);
+
+      await sleep(reducedMotion ? 50 : 120);
+
+      next = applyGravityAndRefill(cleared);
+      setBoard(next);
+
+      await sleep(reducedMotion ? 50 : 140);
+    }
+
+    return next;
+  };
+
+  useEffect(() => {
+    // Check level completion whenever score changes.
+    if (score >= targetScore && !isBusy) {
+      startNextLevel();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [score, targetScore]);
+
+  const handleCellActivate = async (idx) => {
+    if (isBusy || settingsOpen) return;
+    if (!canMove) return;
+
+    if (selectedIndex === null) {
+      setSelectedIndex(idx);
+      soundsRef.current?.swap();
+      return;
+    }
+
+    // reselect same cell
+    if (selectedIndex === idx) {
+      setSelectedIndex(null);
+      return;
+    }
+
+    // second click: attempt swap if adjacent
+    if (!areAdjacent(selectedIndex, idx)) {
+      // switch selection to new cell
+      setSelectedIndex(idx);
+      soundsRef.current?.invalid();
+      return;
+    }
+
+    // Validate swap creates a match
+    const valid = wouldSwapCreateMatch(board, selectedIndex, idx);
+    if (!valid) {
+      soundsRef.current?.invalid();
+      // quick "shake" feedback by toggling selection off/on (CSS handles shake on selected)
+      setSelectedIndex(null);
+      await sleep(reducedMotion ? 30 : 80);
+      setSelectedIndex(idx);
+      return;
+    }
+
+    setIsBusy(true);
+    setSelectedIndex(null);
+
+    setMovesLeft((m) => Math.max(0, m - 1));
+    soundsRef.current?.swap();
+
+    let swapped = swapCells(board, selectedIndex, idx);
+    setBoard(swapped);
+
+    await sleep(reducedMotion ? 60 : 140);
+
+    swapped = await resolveBoard(swapped);
+
+    setIsBusy(false);
+
+    // If out of moves after a valid move, end state is simply "no moves"; user can start new game.
+    // We keep board as-is for the final view.
+  };
+
+  const statusText = useMemo(() => {
+    if (!canMove) return "No moves left. Start a new game.";
+    if (isBusy) return "Resolving matches…";
+    if (score >= targetScore) return "Level complete!";
+    return "Select a candy, then select an adjacent candy to swap.";
+  }, [canMove, isBusy, score, targetScore]);
 
   return (
     <div className="App">
-      <header className="App-header">
-        <button 
-          className="theme-toggle" 
-          onClick={toggleTheme}
-          aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-        >
-          {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
-        </button>
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.js</code> and save to reload.
-        </p>
-        <p>
-          Current theme: <strong>{theme}</strong>
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
+      <main className="cc-page">
+        <HUD level={level} score={score} targetScore={targetScore} />
+
+        <div className="cc-center">
+          <div className="cc-status" aria-live="polite">
+            {statusText}
+          </div>
+
+          <GameBoard
+            board={board}
+            selectedIndex={selectedIndex}
+            clearingSet={clearingSet}
+            onCellActivate={handleCellActivate}
+            disabled={isBusy || settingsOpen || !canMove}
+          />
+
+          <Controls
+            movesLeft={movesLeft}
+            isBusy={isBusy}
+            onNewGame={startNewGame}
+            onToggleSettings={() => setSettingsOpen(true)}
+          />
+        </div>
+
+        <SettingsModal
+          open={settingsOpen}
+          muted={muted}
+          volume={volume}
+          reducedMotion={reducedMotion}
+          onClose={() => setSettingsOpen(false)}
+          onMutedChange={setMuted}
+          onVolumeChange={setVolume}
+          onReducedMotionChange={setReducedMotion}
+        />
+      </main>
     </div>
   );
 }
