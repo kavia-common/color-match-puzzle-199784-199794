@@ -11,8 +11,7 @@ import {
   createInitialBoard,
   findMatches,
   scoreForMatchGroups,
-  swapCells,
-  wouldSwapCreateMatch
+  swapCells
 } from "./utils/gameUtils";
 import { createSoundPlayer } from "./utils/sound";
 
@@ -47,6 +46,9 @@ function App() {
   const [reducedMotion, setReducedMotion] = useState(false);
 
   const soundsRef = useRef(null);
+  // Incremented for each user-initiated swap attempt; used to ignore stale async work.
+  const swapOpRef = useRef(0);
+
   useEffect(() => {
     soundsRef.current = createSoundPlayer({
       getMuted: () => muted,
@@ -143,43 +145,61 @@ function App() {
       return;
     }
 
+    // Snapshot current selection/board to avoid stale closure issues during async work.
+    const fromIdx = selectedIndex;
+    const toIdx = idx;
+    const boardSnapshot = board;
+
     // reselect same cell
-    if (selectedIndex === idx) {
+    if (fromIdx === toIdx) {
       setSelectedIndex(null);
       return;
     }
 
     // second click: attempt swap if adjacent
-    if (!areAdjacent(selectedIndex, idx)) {
-      // switch selection to new cell
-      setSelectedIndex(idx);
+    if (!areAdjacent(fromIdx, toIdx)) {
+      // switch selection to new cell (no swap)
+      setSelectedIndex(toIdx);
       soundsRef.current?.invalid();
       return;
     }
 
-    // Validate swap creates a match
-    const valid = wouldSwapCreateMatch(board, selectedIndex, idx);
-    if (!valid) {
-      soundsRef.current?.invalid();
-      // quick "shake" feedback by toggling selection off/on (CSS handles shake on selected)
-      setSelectedIndex(null);
-      await sleep(reducedMotion ? 30 : 80);
-      setSelectedIndex(idx);
-      return;
-    }
+    // Begin a new swap operation; anything from older operations should no-op.
+    const opId = ++swapOpRef.current;
 
     setIsBusy(true);
     setSelectedIndex(null);
 
-    setMovesLeft((m) => Math.max(0, m - 1));
     soundsRef.current?.swap();
 
-    let swapped = swapCells(board, selectedIndex, idx);
+    // 1) Tentative swap (always for adjacent candies)
+    let swapped = swapCells(boardSnapshot, fromIdx, toIdx);
     setBoard(swapped);
 
     await sleep(reducedMotion ? 60 : 140);
+    if (swapOpRef.current !== opId) return;
+
+    // 2) Check if that swap created any match
+    const { matchedIndices } = findMatches(swapped);
+
+    // 3) No match => revert swap, do NOT spend a move
+    if (matchedIndices.size === 0) {
+      soundsRef.current?.invalid();
+      const reverted = swapCells(swapped, fromIdx, toIdx);
+      setBoard(reverted);
+
+      await sleep(reducedMotion ? 60 : 140);
+      if (swapOpRef.current !== opId) return;
+
+      setIsBusy(false);
+      return;
+    }
+
+    // 4) Match exists => spend a move and resolve clears/cascades
+    setMovesLeft((m) => Math.max(0, m - 1));
 
     swapped = await resolveBoard(swapped);
+    if (swapOpRef.current !== opId) return;
 
     setIsBusy(false);
 

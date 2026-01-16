@@ -4,14 +4,10 @@ import { getCandyTypes } from "../utils/gameUtils";
 const typeMap = Object.fromEntries(getCandyTypes().map((t) => [t.id, t]));
 
 // PUBLIC_INTERFACE
-export default function Candy({
-  cell,
-  index,
-  isSelected,
-  isClearing,
-  onActivate,
-  disabled
-}) {
+const Candy = React.forwardRef(function Candy(
+  { cell, index, isSelected, isClearing, onActivate, disabled },
+  ref
+) {
   /** Render a single candy cell as an accessible button. */
 
   const type = cell?.type;
@@ -20,6 +16,7 @@ export default function Candy({
 
   return (
     <button
+      ref={ref}
       type="button"
       className={[
         "cc-cell",
@@ -34,11 +31,9 @@ export default function Candy({
       aria-label={`Row ${Math.floor(index / 8) + 1}, Column ${(index % 8) + 1}, ${label}`}
       aria-pressed={isSelected ? "true" : "false"}
     >
-      <span
-        className="cc-candy"
-        data-type={type || "empty"}
-        aria-hidden="true"
-      />
+      <span className="cc-candy" data-type={type || "empty"} aria-hidden="true" />
     </button>
   );
-}
+});
+
+export default Candy;
